@@ -1,0 +1,15 @@
+Platform,Controller,Trajectory,RMSE (m)
+Simulation Non-PyJoules,NR Enhanced,Lemniscate C,0.5490108214234571
+Simulation Non-PyJoules,NR Enhanced,Circle A,0.7118896553232292
+Simulation Non-PyJoules,NR Enhanced,Triangle,0.1824690417934616
+Simulation Non-PyJoules,NR Enhanced,Lemniscate A,0.5390513707505519
+Simulation Non-PyJoules,NR Enhanced,Sawtooth,0.37977403737569554
+Simulation Non-PyJoules,NR Enhanced,Circle B,0.4174193655750807
+Simulation Non-PyJoules,NR Enhanced,Lemniscate B,0.5195455710360772
+Simulation Non-PyJoules,MPC,Sawtooth,
+Simulation Non-PyJoules,MPC,Lemniscate B,
+Simulation Non-PyJoules,MPC,Triangle,
+Simulation Non-PyJoules,MPC,Lemniscate C,
+Simulation Non-PyJoules,MPC,Circle B,
+Simulation Non-PyJoules,MPC,Lemniscate A,
+Simulation Non-PyJoules,MPC,Circle A,

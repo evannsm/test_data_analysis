@@ -61,15 +61,23 @@ def load_csv(file_path: str) -> pd.DataFrame:
     return df
 
 
-def extract_metadata_from_data(df: pd.DataFrame) -> Dict[str, str]:
+def is_pyjoules_file(filename: str) -> bool:
+    """Check if filename is from pyjoules logs (ends with _pyj.csv)"""
+    return filename.endswith('_pyj.csv')
+
+
+def extract_metadata_from_data(df: pd.DataFrame, filename: str = None) -> Dict[str, str]:
     """
     Extract platform, controller, and trajectory metadata from the data columns.
     This uses the actual enum values logged in the data instead of filename parsing.
+    Falls back to filename parsing for controller if not in data.
 
     Parameters:
     -----------
     df : pd.DataFrame
         DataFrame containing platform, controller, and trajectory columns
+    filename : str, optional
+        Filename to parse for controller if not in data columns
 
     Returns:
     --------
@@ -84,9 +92,24 @@ def extract_metadata_from_data(df: pd.DataFrame) -> Dict[str, str]:
         'traj_spin': False
     }
 
-    # String to standard name mappings
-    PLATFORM_STR_MAP = {'sim': 'Simulation', 'hw': 'Hardware'}
-    CONTROLLER_STR_MAP = {'nr': 'NR Standard', 'nr_enhanced': 'NR Enhanced', 'mpc': 'MPC'}
+    # String to standard name mappings (handle both lowercase and uppercase)
+    PLATFORM_STR_MAP = {
+        'sim': 'Simulation',
+        'hw': 'Hardware',
+        'SIM': 'Simulation',
+        'HW': 'Hardware'
+    }
+
+    CONTROLLER_STR_MAP = {
+        'nr': 'NR Standard',
+        'nr_enhanced': 'NR Enhanced',
+        'mpc': 'MPC',
+        'NR': 'NR Standard',
+        'NR_ENHANCED': 'NR Enhanced',
+        'MPC': 'MPC',
+        'NMPC': 'MPC'
+    }
+
     TRAJECTORY_STR_MAP = {
         'circle_horz': 'Circle H',
         'circle_vert': 'Circle V',
@@ -95,7 +118,16 @@ def extract_metadata_from_data(df: pd.DataFrame) -> Dict[str, str]:
         'fig8_vert_tall': 'Fig8 VT',
         'sawtooth': 'Sawtooth',
         'triangle': 'Triangle',
-        'helix': 'Helix'
+        'helix': 'Helix',
+        # Add uppercase variants
+        'CIRCLE_HORIZONTAL': 'Circle H',
+        'CIRCLE_VERTICAL': 'Circle V',
+        'FIG8_HORIZONTAL': 'Fig8 H',
+        'FIG8_VERTICAL_SHORT': 'Fig8 VS',
+        'FIG8_VERTICAL_TALL': 'Fig8 VT',
+        'SAWTOOTH': 'Sawtooth',
+        'TRIANGLE': 'Triangle',
+        'HELIX': 'Helix'
     }
 
     # Extract platform
@@ -107,7 +139,7 @@ def extract_metadata_from_data(df: pd.DataFrame) -> Dict[str, str]:
             platform_val = int(platform_val)
             metadata['platform'] = PLATFORM_NAMES.get(platform_val, f'Platform {platform_val}')
 
-    # Extract controller
+    # Extract controller (with filename fallback)
     if 'controller' in df.columns:
         controller_val = df['controller'].mode()[0]  # Most common value
         if isinstance(controller_val, str):
@@ -115,17 +147,17 @@ def extract_metadata_from_data(df: pd.DataFrame) -> Dict[str, str]:
         else:
             controller_val = int(controller_val)
             metadata['controller'] = CONTROLLER_NAMES.get(controller_val, f'Controller {controller_val}')
+    elif filename is not None:
+        # Parse controller from filename
+        # Expected patterns: sim_nmpc_*, sim_nr_enh_*, hw_nmpc_*, hw_nr_enh_*
+        if 'nmpc' in filename.lower() or 'mpc' in filename.lower():
+            metadata['controller'] = 'MPC'
+        elif 'nr_enh' in filename.lower() or 'nr_enhanced' in filename.lower():
+            metadata['controller'] = 'NR Enhanced'
+        elif 'nr' in filename.lower():
+            metadata['controller'] = 'NR Standard'
 
-    # Extract trajectory
-    if 'trajectory' in df.columns:
-        trajectory_val = df['trajectory'].mode()[0]  # Most common value
-        if isinstance(trajectory_val, str):
-            metadata['trajectory'] = TRAJECTORY_STR_MAP.get(trajectory_val, trajectory_val)
-        else:
-            trajectory_val = int(trajectory_val)
-            metadata['trajectory'] = TRAJECTORY_NAMES.get(trajectory_val, f'Trajectory {trajectory_val}')
-
-    # Extract trajectory modifiers
+    # Extract trajectory modifiers FIRST (needed for trajectory mapping)
     if 'traj_double' in df.columns:
         traj_double_val = df['traj_double'].mode()[0]
         if isinstance(traj_double_val, str):
@@ -134,6 +166,11 @@ def extract_metadata_from_data(df: pd.DataFrame) -> Dict[str, str]:
         else:
             metadata['traj_double'] = bool(traj_double_val)
 
+    # Fallback: check filename for "_2x" indicator (some logs incorrectly show "NormSpd")
+    if not metadata['traj_double'] and filename is not None:
+        if '_2x' in filename.lower():
+            metadata['traj_double'] = True
+
     if 'traj_spin' in df.columns:
         traj_spin_val = df['traj_spin'].mode()[0]
         if isinstance(traj_spin_val, str):
@@ -141,6 +178,32 @@ def extract_metadata_from_data(df: pd.DataFrame) -> Dict[str, str]:
             metadata['traj_spin'] = 'spin' in traj_spin_val.lower() and 'no' not in traj_spin_val.lower()
         else:
             metadata['traj_spin'] = bool(traj_spin_val)
+
+    # Check traj_short for disambiguating FIG8_VERTICAL
+    traj_is_short = False
+    if 'traj_short' in df.columns:
+        traj_short_val = df['traj_short'].mode()[0]
+        if isinstance(traj_short_val, str):
+            # "Short" means short version, "Not Short" means tall version
+            traj_is_short = 'short' in traj_short_val.lower() and 'not' not in traj_short_val.lower()
+        else:
+            traj_is_short = bool(traj_short_val)
+
+    # Extract trajectory
+    if 'trajectory' in df.columns:
+        trajectory_val = df['trajectory'].mode()[0]  # Most common value
+        if isinstance(trajectory_val, str):
+            # Special handling for FIG8_VERTICAL - use traj_short to distinguish
+            if trajectory_val == 'FIG8_VERTICAL':
+                if traj_is_short:
+                    metadata['trajectory'] = 'Fig8 VS'  # Lemniscate B (Short)
+                else:
+                    metadata['trajectory'] = 'Fig8 VT'  # Lemniscate C (Tall)
+            else:
+                metadata['trajectory'] = TRAJECTORY_STR_MAP.get(trajectory_val, trajectory_val)
+        else:
+            trajectory_val = int(trajectory_val)
+            metadata['trajectory'] = TRAJECTORY_NAMES.get(trajectory_val, f'Trajectory {trajectory_val}')
 
     return metadata
 
@@ -177,14 +240,16 @@ def extract_metadata_from_filename(filename: str) -> Dict[str, str]:
     }
 
 
-def load_all_csvs(directory: str) -> Dict[str, pd.DataFrame]:
+def load_all_csvs(directory: str, exclude_dirs: List[str] = None) -> Dict[str, pd.DataFrame]:
     """
-    Load all CSV files from a directory.
+    Load all CSV files from a directory recursively.
 
     Parameters:
     -----------
     directory : str
         Path to directory containing CSV files
+    exclude_dirs : list, optional
+        List of directory names to exclude (e.g., ['pyJoules_files'])
 
     Returns:
     --------
@@ -194,7 +259,15 @@ def load_all_csvs(directory: str) -> Dict[str, pd.DataFrame]:
     csv_dir = Path(directory)
     data_dict = {}
 
-    for csv_file in csv_dir.glob('*.csv'):
+    if exclude_dirs is None:
+        exclude_dirs = []
+
+    # Search recursively for CSV files
+    for csv_file in csv_dir.rglob('*.csv'):
+        # Skip files in excluded directories
+        if any(excluded in csv_file.parts for excluded in exclude_dirs):
+            continue
+
         data_dict[csv_file.name] = load_csv(str(csv_file))
 
     return data_dict
@@ -203,6 +276,110 @@ def load_all_csvs(directory: str) -> Dict[str, pd.DataFrame]:
 # ============================================================================
 # Trajectory Analysis
 # ============================================================================
+
+def get_trajectory_cycle_time(trajectory: str, traj_double: bool = False) -> Optional[float]:
+    """
+    Get the cycle time for a trajectory based on trajectories.py definitions.
+
+    Parameters:
+    -----------
+    trajectory : str
+        Trajectory name (e.g., 'Circle H', 'Triangle')
+    traj_double : bool
+        Whether trajectory is running at double speed
+
+    Returns:
+    --------
+    float or None
+        Cycle time in seconds, or None if not a cyclic trajectory
+    """
+    # Base cycle times from trajectories.py
+    cycle_times = {
+        'Circle H': 30.0,      # circle_horizontal period_pos
+        'Circle V': 30.0,      # circle_vertical period_pos
+        'Fig8 H': 30.0,        # fig8_horizontal period_pos
+        'Fig8 VS': 30.0,       # fig8_vertical period_pos (short version)
+        'Fig8 VT': 30.0,       # fig8_vertical period_pos (tall version)
+        'Helix': 30.0,         # helix cycle_time
+        'Sawtooth': 60.0,      # sawtooth flight_time / 2 (returns to start halfway)
+        'Triangle': 120,      # triangle flight_time (3 sides × T_seg)
+    }
+
+    if trajectory not in cycle_times:
+        return None
+
+    cycle_time = cycle_times[trajectory]
+
+    # Adjust for double speed
+    if traj_double:
+        cycle_time /= 2.0
+
+    return cycle_time
+
+
+def detect_one_cycle(df: pd.DataFrame, position_cols: List[str] = None, threshold: float = 0.1) -> int:
+    """
+    Detect when a trajectory completes one cycle by finding when it returns close to start.
+
+    Parameters:
+    -----------
+    df : pd.DataFrame
+        DataFrame containing trajectory data
+    position_cols : list, optional
+        Column names to use for position (e.g., ['x_ref', 'y_ref', 'z_ref'])
+        If None, uses ['x', 'y', 'z']
+    threshold : float
+        Distance threshold (in meters) to consider "returned to start"
+
+    Returns:
+    --------
+    int
+        Index where first cycle completes, or -1 if no cycle detected
+    """
+    if position_cols is None:
+        position_cols = ['x', 'y', 'z']
+
+    # Check if all required columns exist and have non-NaN values
+    for col in position_cols:
+        if col not in df.columns or df[col].isna().all():
+            return -1  # Can't detect cycle
+
+    # Get starting position (use first valid row)
+    try:
+        start_idx = df[position_cols].first_valid_index()
+        if start_idx is None:
+            return -1
+
+        start_pos = df.loc[start_idx, position_cols].values.astype(float)
+
+        # Check if we got valid numeric values
+        if np.any(np.isnan(start_pos)):
+            return -1
+    except (ValueError, TypeError):
+        return -1  # Can't convert to float
+
+    # Calculate distance from start for each point
+    # Skip the first 10% of data to avoid detecting start as cycle completion
+    min_idx = start_idx + max(10, len(df) // 10)
+
+    distances = []
+    for idx in range(min_idx, len(df)):
+        try:
+            pos = df.loc[idx, position_cols].values.astype(float)
+            if np.any(np.isnan(pos)):
+                continue
+            dist = np.linalg.norm(pos - start_pos)
+            distances.append((idx, dist))
+        except (ValueError, TypeError):
+            continue  # Skip rows that can't be converted to float
+
+    # Find first point that returns close to start
+    for idx, dist in distances:
+        if dist < threshold:
+            return idx
+
+    return -1  # No cycle detected
+
 
 def detect_trajectory_plane(df: pd.DataFrame, threshold: float = 0.1) -> str:
     """
@@ -220,14 +397,29 @@ def detect_trajectory_plane(df: pd.DataFrame, threshold: float = 0.1) -> str:
     str
         One of 'xy', 'xz', or 'yz' indicating the primary plane of motion
     """
-    # Calculate variance in each reference dimension
-    var_x = df['x_ref'].var() if 'x_ref' in df.columns else 0
-    var_y = df['y_ref'].var() if 'y_ref' in df.columns else 0
-    var_z = df['z_ref'].var() if 'z_ref' in df.columns else 0
+    # Try to use reference values first, fall back to actual values if ref is all NaN
+    use_ref = True
+    if 'x_ref' in df.columns and 'y_ref' in df.columns and 'z_ref' in df.columns:
+        # Check if reference values are all NaN
+        if df['x_ref'].isna().all() or df['y_ref'].isna().all() or df['z_ref'].isna().all():
+            use_ref = False
+    else:
+        use_ref = False
+
+    if use_ref:
+        # Calculate variance in each reference dimension
+        var_x = df['x_ref'].var()
+        var_y = df['y_ref'].var()
+        var_z = df['z_ref'].var()
+    else:
+        # Fall back to actual trajectory values
+        var_x = df['x'].var() if 'x' in df.columns else 0
+        var_y = df['y'].var() if 'y' in df.columns else 0
+        var_z = df['z'].var() if 'z' in df.columns else 0
 
     # Normalize variances
     total_var = var_x + var_y + var_z
-    if total_var == 0:
+    if total_var == 0 or np.isnan(total_var):
         return 'xy'  # default
 
     var_x_norm = var_x / total_var
@@ -272,7 +464,7 @@ def trim_trailing_and_leading_all_nan(X: np.ndarray) -> np.ndarray:
 
 
 
-def align_reference_to_actual(df: pd.DataFrame, sampling_rate: float = 10.0) -> pd.DataFrame:
+def align_reference_to_actual(df: pd.DataFrame, sampling_rate: float = 10.0, lookahead_time_override: Optional[float] = None) -> pd.DataFrame:
     """
     Align reference values to actual values by shifting reference backward in time
     to account for lookahead_time.
@@ -287,18 +479,23 @@ def align_reference_to_actual(df: pd.DataFrame, sampling_rate: float = 10.0) -> 
         DataFrame containing actual values, reference values, and lookahead_time
     sampling_rate : float
         Data sampling rate in Hz (default: 10.0 Hz)
+    lookahead_time_override : float, optional
+        Override lookahead_time value. If provided, uses this instead of column value.
 
     Returns:
     --------
     pd.DataFrame
         DataFrame with aligned reference values, trimmed to valid range
     """
-    if 'lookahead_time' not in df.columns:
-        print("Warning: 'lookahead_time' column not found. Returning original DataFrame.")
+    # Use override if provided, otherwise try to get from column
+    if lookahead_time_override is not None:
+        lookahead_time = lookahead_time_override
+    elif 'lookahead_time' in df.columns:
+        # Get lookahead time (should be constant throughout)
+        lookahead_time = df['lookahead_time'].iloc[0]
+    else:
+        # No lookahead time available, return original
         return df
-
-    # Get lookahead time (should be constant throughout)
-    lookahead_time = df['lookahead_time'].iloc[0]
 
     # Calculate number of samples to shift
     shift_samples = int(round(lookahead_time * sampling_rate))
@@ -670,7 +867,12 @@ def plot_trajectory_2d(ax, df: pd.DataFrame, plane: Optional[str] = None,
                        actual_color: str = 'red', ref_color: str = 'blue',
                        actual_label: str = 'Actual', ref_label: str = 'Reference',
                        flip_z: bool = True, align_lookahead: bool = True,
-                       sampling_rate: float = 10.0, **kwargs):
+                       sampling_rate: float = 10.0,
+                       plot_one_cycle_ref: bool = True,
+                       cycle_threshold: float = 0.1,
+                       trajectory_name: Optional[str] = None,
+                       traj_double: bool = False,
+                       **kwargs):
     """
     Plot a 2D trajectory on given axes.
 
@@ -696,6 +898,15 @@ def plot_trajectory_2d(ax, df: pd.DataFrame, plane: Optional[str] = None,
         Whether to align reference values to account for lookahead_time (default: True)
     sampling_rate : float
         Data sampling rate in Hz (default: 10.0 Hz), used for alignment
+    plot_one_cycle_ref : bool
+        If True, only plot one cycle of reference trajectory (default: True)
+    cycle_threshold : float
+        Distance threshold for detecting cycle completion (default: 0.1 meters)
+        (deprecated - now uses time-based detection from trajectories.py)
+    trajectory_name : str, optional
+        Name of trajectory (e.g., 'Circle H', 'Triangle') for time-based cycle detection
+    traj_double : bool
+        Whether trajectory is running at double speed (default: False)
     **kwargs : dict
         Additional arguments passed to plot()
     """
@@ -733,10 +944,27 @@ def plot_trajectory_2d(ax, df: pd.DataFrame, plane: Optional[str] = None,
         y_data = df[y_col].values
         y_ref_data = df[y_ref_col].values
 
-    # Plot
+    # Detect one cycle for reference if requested
+    ref_end_idx = len(df)
+    if plot_one_cycle_ref and trajectory_name is not None:
+        # Use known cycle times from trajectories.py
+        cycle_time = get_trajectory_cycle_time(trajectory_name, traj_double)
+
+        if cycle_time is not None and 'traj_time' in df.columns:
+            # Find the index where traj_time >= cycle_time
+            traj_times = df['traj_time'].values
+            cycle_indices = np.where(traj_times >= cycle_time)[0]
+
+            if len(cycle_indices) > 0:
+                ref_end_idx = cycle_indices[0]
+
+    # Plot actual trajectory (full)
     ax.plot(df[x_col], y_data, color=actual_color, linestyle='-',
             label=actual_label, **kwargs)
-    ax.plot(df[x_ref_col], y_ref_data, color=ref_color, linestyle='--',
+
+    # Plot reference trajectory (one cycle only if detected)
+    ax.plot(df[x_ref_col].iloc[:ref_end_idx], y_ref_data[:ref_end_idx],
+            color=ref_color, linestyle='--',
             label=ref_label, **kwargs)
 
     ax.set_xlabel(xlabel)
