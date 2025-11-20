@@ -294,17 +294,15 @@ def get_trajectory_cycle_time(trajectory: str, traj_double: bool = False) -> Opt
         Cycle time in seconds, or None if not a cyclic trajectory
     """
     # Base cycle times from trajectories.py
-    val1 = 5.0
-    val2 = 10.0
     cycle_times = {
-        'Circle H': val1,      # circle_horizontal period_pos
-        'Circle V': val1,      # circle_vertical period_pos
-        'Fig8 H': val1,        # fig8_horizontal period_pos
-        'Fig8 VS': val1,       # fig8_vertical period_pos (short version)
-        'Fig8 VT': val1,       # fig8_vertical period_pos (tall version)
-        'Helix': val1,         # helix cycle_time
-        'Sawtooth': val2,      # sawtooth flight_time / 2 (returns to start halfway)
-        'Triangle': val2,      # triangle flight_time (3 sides × T_seg)
+        'Circle H': 30.0,      # circle_horizontal period_pos
+        'Circle V': 30.0,      # circle_vertical period_pos
+        'Fig8 H': 30.0,        # fig8_horizontal period_pos
+        'Fig8 VS': 30.0,       # fig8_vertical period_pos (short version)
+        'Fig8 VT': 30.0,       # fig8_vertical period_pos (tall version)
+        'Helix': 30.0,         # helix cycle_time
+        'Sawtooth': 60.0,      # sawtooth flight_time / 2 (returns to start halfway)
+        'Triangle': 120,      # triangle flight_time (3 sides × T_seg)
     }
 
     if trajectory not in cycle_times:
